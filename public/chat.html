@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mini Chat</title>
+    <style>
+      body {
+        font-family: "Segoe UI", sans-serif;
+        background: #f0f2f5;
+        color: #333;
+        padding: 20px;
+        max-width: 700px;
+        margin: auto;
+      }
+
+      h2 {
+        margin-bottom: 10px;
+      }
+
+      #chat {
+        background: #fff;
+        border: 1px solid #ccc;
+        padding: 10px;
+        max-height: 300px;
+        overflow-y: auto;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        list-style: none;
+      }
+
+      #chat li {
+        margin-bottom: 6px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: #f9f9f9;
+      }
+
+      #chat li.own {
+        background: #dceeff;
+        text-align: right;
+      }
+
+      input,
+      select {
+        width: 100%;
+        padding: 8px;
+        margin: 6px 0;
+        border: 1px solid #bbb;
+        border-radius: 4px;
+      }
+
+      button {
+        padding: 8px 16px;
+        background: #2b7bff;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #1e5ad6;
+      }
+
+      #typing {
+        font-style: italic;
+        color: gray;
+        margin-top: 5px;
+      }
+
+      #user-list {
+        padding-left: 16px;
+        font-size: 0.9em;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Chat en tiempo real</h2>
+    <h2>Bienvenido, <span id="user-welcome"></span></h2>
+    <p>Estás en la sala: <strong id="current-room">#general</strong></p>
+
+    <button id="logout-btn" style="margin-bottom: 15px">Cerrar sesión</button><br>
+
+    <label for="room-switch">Cambiar de sala:</label>
+    <select id="room-switch">
+      <option value="general">💬 General</option>
+      <option value="soporte">🛠️ Soporte</option>
+      <option value="juegos">🎮 Juegos</option>
+      <option value="offtopic">🌴 Offtopic</option>
+    </select>
+
+    <ul id="chat"></ul>
+    <p id="typing"></p>
+    <input
+      id="message"
+      placeholder="Escribe tu mensaje..."
+      autocomplete="off"
+    />
+    <button onclick="send()">Enviar</button>
+
+    <script>
+      const token = localStorage.getItem("token");
+      const room = localStorage.getItem("room") || "general";
+
+      if (!token) {
+        alert("Debes iniciar sesión");
+        location.href = "index.html";
+      }
+
+      function parseJwt(token) {
+        try {
+          return JSON.parse(atob(token.split(".")[1]));
+        } catch (e) {
+          return null;
+        }
+      }
+
+      const payload = parseJwt(token);
+      const username = payload?.username || "Invitado";
+      document.getElementById("user-welcome").textContent = username;
+      document.title = `Mini Chat | ${username} @ ${room}`;
+
+      let socket = null;
+      const messageInput = document.getElementById("message");
+      const chat = document.getElementById("chat");
+      const typingDisplay = document.getElementById("typing");
+      let typingTimeout = null;
+
+      function connectToRoom(room) {
+        if (socket) socket.close();
+
+        socket = new WebSocket(
+          `ws://${location.host}/?token=${token}&room=${room}`
+        );
+        localStorage.setItem("room", room);
+        chat.innerHTML = "";
+        typingDisplay.textContent = "";
+        document.getElementById("current-room").textContent = `#${room}`;
+        document.title = `Mini Chat | ${username} @ ${room}`;
+
+        socket.onmessage = (e) => {
+          const data = JSON.parse(e.data);
+
+          if (data.type === "message") {
+            const li = document.createElement("li");
+            const isOwn = data.username === username;
+
+            // ✅ Formatea el timestamp si existe
+            let hora = "";
+            if (data.timestamp) {
+              const fecha = new Date(data.timestamp);
+              hora = fecha.toLocaleTimeString("es-VE", {
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+            }
+
+            li.innerHTML = `
+  <strong style="color: ${isOwn ? "#2b7bff" : "#000"}">${
+              data.username
+            }</strong> 
+  <small style="color: gray;">${hora}</small><br>
+  <span>${data.content}</span>
+`;
+            li.style.background = isOwn ? "#e6f0ff" : "#f9f9f9";
+            li.style.padding = "6px 12px";
+            li.style.borderRadius = "5px";
+            li.style.marginBottom = "6px";
+            li.style.textAlign = isOwn ? "right" : "left";
+
+            chat.appendChild(li);
+            chat.scrollTop = chat.scrollHeight;
+          } else if (data.type === "typing") {
+            typingDisplay.textContent = `${data.user} está escribiendo...`;
+            clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(
+              () => (typingDisplay.textContent = ""),
+              2000
+            );
+          } else if (data.type === "notice") {
+            const li = document.createElement("li");
+            li.style.fontStyle = "italic";
+            li.textContent = `[${data.content}]`;
+            chat.appendChild(li);
+          }
+        };
+
+        messageInput.addEventListener("input", () => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "typing" }));
+          }
+        });
+      }
+
+      function send() {
+        const text = messageInput.value.trim();
+        if (text && socket?.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "message", content: text }));
+          messageInput.value = "";
+        }
+      }
+
+      connectToRoom(room);
+
+      document.getElementById("room-switch").value = room;
+      document.getElementById("room-switch").addEventListener("change", (e) => {
+        const newRoom = e.target.value;
+        connectToRoom(newRoom);
+      });
+
+      document.getElementById("logout-btn").addEventListener("click", () => {
+        localStorage.removeItem("token");
+        socket.close();
+        window.location.href = "index.html";
+      });
+    </script>
+  </body>
+</html>

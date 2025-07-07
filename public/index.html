@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Acceso | Mini Chat</title>
+    <style>
+      body {
+        font-family: "Segoe UI", sans-serif;
+        background: #f3f5fa;
+        max-width: 400px;
+        margin: 50px auto;
+        padding: 20px;
+        color: #333;
+      }
+
+      h2 {
+        text-align: center;
+        color: #2b7bff;
+        margin-bottom: 20px;
+      }
+
+      nav {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+
+      nav button {
+        margin: 0 5px;
+        padding: 8px 14px;
+        background-color: #2b7bff;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+
+      nav button:hover {
+        background-color: #1e5bd1;
+      }
+
+      .form-section {
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .visible {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      input {
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+      }
+
+      button {
+        padding: 10px;
+        background-color: #2b7bff;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background-color: #1e5bd1;
+      }
+
+      .error {
+        color: #d33;
+        font-size: 0.9em;
+      }
+
+      .success {
+        color: #2b7bff;
+        font-size: 0.9em;
+      }
+
+      select {
+        width: 100%;
+        padding: 8px;
+        margin: 6px 0;
+        border: 1px solid #bbb;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Bienvenido a Mini Chat</h2>
+
+    <nav>
+      <button onclick="showForm('login')">Iniciar sesión</button>
+      <button onclick="showForm('register')">Crear cuenta</button>
+    </nav>
+
+    <section id="login-form" class="form-section visible">
+      <input type="text" id="login-username" placeholder="Usuario" />
+      <input type="password" id="login-password" placeholder="Contraseña" />
+      <select id="room-select">
+        <option value="general">💬 General</option>
+        <option value="soporte">🛠️ Soporte</option>
+        <option value="juegos">🎮 Juegos</option>
+        <option value="offtopic">🌴 Offtopic</option>
+      </select>
+
+      <button onclick="login()">Entrar</button>
+      <p id="login-message"></p>
+    </section>
+
+    <section id="register-form" class="form-section">
+      <input type="text" id="reg-username" placeholder="Nuevo usuario" />
+      <input type="password" id="reg-password" placeholder="Contraseña" />
+      <input
+        type="password"
+        id="reg-confirm"
+        placeholder="Confirmar contraseña"
+      />
+      <button onclick="register()">Registrarse</button>
+      <p id="register-message"></p>
+    </section>
+
+    <script>
+      function showForm(target) {
+        document
+          .querySelectorAll(".form-section")
+          .forEach((s) => s.classList.remove("visible"));
+        document.getElementById(`${target}-form`).classList.add("visible");
+      }
+
+      async function login() {
+        const username = document.getElementById("login-username").value;
+        const password = document.getElementById("login-password").value;
+        const msg = document.getElementById("login-message");
+        const room = document.getElementById("room-select").value;
+        localStorage.setItem("room", room);
+
+        msg.textContent = "";
+        const res = await fetch("/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+
+        const data = await res.json();
+        if (res.ok && data.token) {
+          msg.textContent = "✅ Acceso exitoso";
+          msg.className = "success";
+          // Redirigir al chat o iniciar WebSocket aquí
+          // location.href = "/chat.html"; ← si tuvieras una página separada
+        } else {
+          msg.textContent = `⚠️ ${data.error || "Error de autenticación"}`;
+          msg.className = "error";
+        }
+        if (res.ok && data.token) {
+          localStorage.setItem("token", data.token);
+          window.location.href = "chat.html";
+        }
+      }
+
+      async function register() {
+        const username = document.getElementById("reg-username").value;
+        const password = document.getElementById("reg-password").value;
+        const confirm = document.getElementById("reg-confirm").value;
+        const msg = document.getElementById("register-message");
+
+        msg.textContent = "";
+
+        if (password !== confirm) {
+          msg.textContent = "Las contraseñas no coinciden";
+          msg.className = "error";
+          return;
+        }
+
+        if (username.length < 3 || password.length < 4) {
+          msg.textContent = "Usuario o contraseña demasiado cortos";
+          msg.className = "error";
+          return;
+        }
+
+        const res = await fetch("/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          msg.textContent = "✅ Usuario registrado correctamente";
+          msg.className = "success";
+          document.getElementById("reg-username").value = "";
+          document.getElementById("reg-password").value = "";
+          document.getElementById("reg-confirm").value = "";
+        } else {
+          msg.textContent = `⚠️ ${data.error || "Error de registro"}`;
+          msg.className = "error";
+        }
+      }
+    </script>
+  </body>
+</html>
