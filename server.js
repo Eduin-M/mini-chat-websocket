@@ -6,116 +6,128 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 const jwt = require("jsonwebtoken");
-const bodyParser = require("body-parser");
-const db = require("./db"); // Asegúrate de que este archivo exista y esté configurado correctamente
-const { type } = require("os");
-const SECRET_KEY = "Eduin";
+const db = require("./db");
 
-app.use(bodyParser.json());
+const SECRET_KEY = process.env.JWT_SECRET || "dev-insecure-key-change-me";
+const PORT = process.env.PORT || 8080;
+const MAX_MESSAGE_LENGTH = 500;
+
+if (!process.env.JWT_SECRET) {
+  console.warn("⚠️ JWT_SECRET no está configurada. Usando clave temporal de desarrollo.");
+}
+
+app.use(express.json());
+
+function sendToRoom(room, payload, excludeSocket = null) {
+  wss.clients.forEach((client) => {
+    if (
+      client !== excludeSocket &&
+      client.readyState === WebSocket.OPEN &&
+      client.room === room
+    ) {
+      client.send(JSON.stringify(payload));
+    }
+  });
+}
 
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
+  if (typeof username !== "string" || typeof password !== "string") {
+    return res.status(400).json({ error: "Datos inválidos" });
+  }
 
   db.get(`SELECT * FROM users WHERE username = ?`, [username], (err, user) => {
     if (err) return res.status(500).json({ error: "Error del servidor" });
     if (!user) return res.status(401).json({ error: "Usuario no encontrado" });
 
-    // Compara contraseña ingresada con hash
-    const validPassword = bcrypt.compareSync(password, user.password);
-    if (!validPassword)
-      return res.status(401).json({ error: "Contraseña incorrecta" });
+    bcrypt
+      .compare(password, user.password)
+      .then((validPassword) => {
+        if (!validPassword) {
+          return res.status(401).json({ error: "Contraseña incorrecta" });
+        }
 
-    const token = jwt.sign({ username: user.username }, SECRET_KEY, {
-      expiresIn: "1h",
-    });
-    res.json({ token });
+        const token = jwt.sign({ username: user.username }, SECRET_KEY, {
+          expiresIn: "1h",
+        });
+        return res.json({ token });
+      })
+      .catch(() => res.status(500).json({ error: "Error del servidor" }));
   });
 });
 
-app.post("/register", async (req, res) => {
+app.post("/register", (req, res) => {
   const { username, password } = req.body;
+  if (typeof username !== "string" || typeof password !== "string") {
+    return res.status(400).json({ error: "Datos inválidos" });
+  }
 
   if (!username || !password || username.length < 3 || password.length < 4) {
     return res.status(400).json({ error: "Datos inválidos" });
   }
 
-  try {
-    // Verifica si ya existe ese usuario
-    db.get(
-      `SELECT * FROM users WHERE username = ?`,
-      [username],
-      async (err, row) => {
-        if (row) {
-          return res.status(409).json({ error: "El usuario ya existe" });
-        }
+  db.get(`SELECT * FROM users WHERE username = ?`, [username], (err, row) => {
+    if (err) {
+      return res.status(500).json({ error: "Error del servidor" });
+    }
+    if (row) {
+      return res.status(409).json({ error: "El usuario ya existe" });
+    }
 
-        // Encripta contraseña y guarda
-        const hash = await bcrypt.hash(password, 10);
+    bcrypt
+      .hash(password, 10)
+      .then((hash) => {
         db.run(
           `INSERT INTO users (username, password) VALUES (?, ?)`,
           [username, hash],
-          (err) => {
-            if (err)
+          (insertErr) => {
+            if (insertErr) {
               return res.status(500).json({ error: "Error al crear usuario" });
+            }
             return res
               .status(201)
               .json({ message: "Usuario registrado exitosamente" });
           }
         );
-      }
-    );
-  } catch (error) {
-    return res.status(500).json({ error: "Error del servidor" });
-  }
+      })
+      .catch(() => res.status(500).json({ error: "Error del servidor" }));
+  });
 });
 
 app.use(express.static("public"));
 
 wss.on("connection", (socket, req) => {
-  const params = new URLSearchParams(req.url.replace("/?", ""));
-  const token = params.get("token");
-  const room = params.get("room") || "general";
+  const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const token = requestUrl.searchParams.get("token");
+  const room = (requestUrl.searchParams.get("room") || "general").trim().toLowerCase();
 
   if (!token) {
-    socket.close();
+    socket.close(1008, "Token requerido");
     return;
   }
+
+  let user;
   try {
-    const user = jwt.verify(token, SECRET_KEY);
-    socket.user = user;
+    user = jwt.verify(token, SECRET_KEY);
+    if (!user || typeof user.username !== "string" || !user.username.trim()) {
+      throw new Error("Token sin username válido");
+    }
+    socket.user = { username: user.username.trim() };
     socket.room = room;
     console.log(`🔐 Usuario conectado: ${user.username}`);
-    wss.clients.forEach((client) => {
-      if (
-        client !== socket &&
-        client.readyState === WebSocket.OPEN &&
-        client.room === socket.room
-      ) {
-        client.send(
-          JSON.stringify({
-            type: "notice",
-            content: `${socket.user.username} se ha conectado`,
-          })
-        );
-      }
-    });
+    sendToRoom(
+      socket.room,
+      {
+        type: "notice",
+        content: `${socket.user.username} se ha conectado`,
+      },
+      socket
+    );
   } catch (err) {
     console.log("❌ Token inválido");
-    socket.close();
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN && client.room === socket.room) {
-        client.send(
-          JSON.stringify({
-            type: "notice",
-            content: `${socket.user.username} se ha desconectado`,
-          })
-        );
-      }
-    });
-
+    socket.close(1008, "Token inválido");
     return;
   }
-  console.log("🔌 Cliente conectado");
 
   db.all(
     `SELECT * FROM messages WHERE room = ? ORDER BY timestamp DESC LIMIT 50`,
@@ -140,53 +152,55 @@ wss.on("connection", (socket, req) => {
     let msg;
 
     try {
-      msg = JSON.parse(data); // Esperamos un JSON con tipo y contenido
+      msg = JSON.parse(data.toString());
     } catch (e) {
       return;
     }
 
-    const payload = {
-      type: "message",
-      username: socket.user.username,
-      content: msg.content,
-      timestamp: new Date().toISOString(),
-    };
+    if (!msg || typeof msg.type !== "string") return;
 
     if (msg.type === "typing") {
-      // Notifica a otros que el usuario está escribiendo
-      wss.clients.forEach((client) => {
-        if (
-          client !== socket &&
-          client.readyState === WebSocket.OPEN &&
-          client.room === socket.room
-        ) {
-          client.send(
-            JSON.stringify({ type: "typing", user: socket.user.username })
-          );
-        }
-      });
+      sendToRoom(
+        socket.room,
+        { type: "typing", user: socket.user.username },
+        socket
+      );
       return;
     }
 
-    // Mensaje normal
-    const fullMsg = `${socket.user.username}: ${msg.content}`;
+    if (msg.type !== "message" || typeof msg.content !== "string") return;
+    const content = msg.content.trim();
+    if (!content || content.length > MAX_MESSAGE_LENGTH) return;
 
-    // Guardar mensaje
+    const payload = {
+      type: "message",
+      username: socket.user.username,
+      content,
+      timestamp: new Date().toISOString(),
+    };
+
     db.run(`INSERT INTO messages (username, content, room) VALUES (?, ?, ?)`, [
       socket.user.username,
-      msg.content,
+      content,
       socket.room,
     ]);
 
-    // Enviar a todos
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN && client.room === socket.room) {
-        client.send(JSON.stringify(payload));
-      }
-    });
+    sendToRoom(socket.room, payload);
+  });
+
+  socket.on("close", () => {
+    if (!socket.user || !socket.room) return;
+    sendToRoom(
+      socket.room,
+      {
+        type: "notice",
+        content: `${socket.user.username} se ha desconectado`,
+      },
+      socket
+    );
   });
 });
 
-server.listen(8080, () => {
-  console.log("🚀 Servidor corriendo en http://localhost:8080");
+server.listen(PORT, () => {
+  console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
 });

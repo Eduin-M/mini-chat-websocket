@@ -125,12 +125,15 @@
       const chat = document.getElementById("chat");
       const typingDisplay = document.getElementById("typing");
       let typingTimeout = null;
+      const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
 
       function connectToRoom(room) {
         if (socket) socket.close();
 
         socket = new WebSocket(
-          `ws://${location.host}/?token=${token}&room=${room}`
+          `${wsProtocol}://${location.host}/?token=${encodeURIComponent(
+            token
+          )}&room=${encodeURIComponent(room)}`
         );
         localStorage.setItem("room", room);
         chat.innerHTML = "";
@@ -155,13 +158,19 @@
               });
             }
 
-            li.innerHTML = `
-  <strong style="color: ${isOwn ? "#2b7bff" : "#000"}">${
-              data.username
-            }</strong> 
-  <small style="color: gray;">${hora}</small><br>
-  <span>${data.content}</span>
-`;
+            const name = document.createElement("strong");
+            name.style.color = isOwn ? "#2b7bff" : "#000";
+            name.textContent = data.username;
+
+            const time = document.createElement("small");
+            time.style.color = "gray";
+            time.textContent = ` ${hora}`;
+
+            const br = document.createElement("br");
+            const content = document.createElement("span");
+            content.textContent = data.content;
+
+            li.append(name, time, br, content);
             li.style.background = isOwn ? "#e6f0ff" : "#f9f9f9";
             li.style.padding = "6px 12px";
             li.style.borderRadius = "5px";
@@ -184,13 +193,13 @@
             chat.appendChild(li);
           }
         };
-
-        messageInput.addEventListener("input", () => {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: "typing" }));
-          }
-        });
       }
+
+      messageInput.addEventListener("input", () => {
+        if (socket?.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "typing" }));
+        }
+      });
 
       function send() {
         const text = messageInput.value.trim();
